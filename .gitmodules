@@ -1,0 +1,3 @@
+[submodule "CARN-pytorch"]
+	path = CARN-pytorch
+	url = https://github.com/nmhkahn/CARN-pytorch.git
