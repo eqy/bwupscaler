@@ -3,6 +3,7 @@ import torch
 import torch.optim as optim
 import os
 import sys
+import time
 sys.path.insert(1, 'CARN-pytorch/carn')
 import model.carn_m
 
@@ -79,9 +80,12 @@ class Trainer():
         learning_rate = self.learning_rate
         while True:
             self.refiner.train()
+            t = time.time()
             for i, (hr, lr) in enumerate(self.train_loader):
                 hr = hr.cuda()
                 lr = lr.cuda()
+                self.train_data_time.update(time.time() - t, hr.size(0))
+
                 sr = self.refiner(lr, self.scale)
                 loss = self.loss_fn(sr, hr)
               
@@ -90,14 +94,19 @@ class Trainer():
                 loss.backward()
                 torch.nn.utils.clip_grad_norm(self.refiner.parameters(), CLIP)
                 self.optimizer.step() 
-
+                self.train_time.update(time.time() - t, hr.size(0))
+                t = time.time()
                 new_learning_rate = self.decay_learning_rate()
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = new_learning_rate
- 
-                self.step += 1
+                
+                self.loss.update(loss, hr.size(0))
+
                 if self.step % self.print_interval == 0:
-                    print(loss)
+                    print(self.loss.avg, self.train_data_time.avg, self.train_time.avg)
+
+                self.step += 1
+                
                 if self.step > self.max_steps:
                     break
             self.evaluate()
