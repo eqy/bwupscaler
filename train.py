@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import torch
 import torch.optim as optim
@@ -12,7 +13,7 @@ from dataset import BWDataset, build_training_transform, build_validation_transf
 
 NUM_WORKERS=4
 CLIP=10.0
-PRINT_INTERVAL=1000
+PRINT_INTERVAL=5000
 MAX_STEPS=10000
 DECAY=150000
 GROUP=1
@@ -35,8 +36,9 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 class Trainer():
-    def __init__(self, train_path, val_path, model, group, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=16, val_batch_size=8):
+    def __init__(self, train_path, val_path, model, group, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn'):
         self.model = model
+        self.model_name = model_name
         self.loss_fn = loss_fn
         self.learning_rate = learning_rate
         self.group = group
@@ -80,6 +82,11 @@ class Trainer():
         learning_rate = self.learning_rate
         while True:
             self.refiner.train()
+            self.loss.reset()
+            self.train_data_time.reset()
+            self.train_time.reset()
+
+            print(f"train... {len(self.train_loader)}")
             t = time.time()
             for i, (hr, lr) in enumerate(self.train_loader):
                 hr = hr.cuda()
@@ -102,40 +109,58 @@ class Trainer():
                 
                 self.loss.update(loss, hr.size(0))
 
+                self.step += 1
+
                 if self.step % self.print_interval == 0:
                     print(self.loss.avg, self.train_data_time.avg, self.train_time.avg)
 
-                self.step += 1
                 
                 if self.step > self.max_steps:
                     break
             self.evaluate()
+            self.save('checkpoints', self.model_name)
 
     def evaluate(self):
+        print(f"validation... {len(self.val_loader)}")
         self.refiner.eval()
+        self.psnr.reset()
+        self.val_time.reset()
+        self.val_data_time.reset()
         with torch.no_grad():
+            t = time.time()
             for i, (hr, lr) in enumerate(self.val_loader):
                 lr = lr.reshape((-1, 3, self.val_res[0]//self.scale, self.val_res[1]//self.scale))
                 hr = hr.reshape((-1, 3, self.val_res[0], self.val_res[1]))
                 lr = lr.cuda()
                 hr = hr.cuda()
+                self.val_data_time.update(time.time() - t, hr.size(0))
                 sr = self.refiner(lr, self.scale)
                 
                 mpsnr = psnr(hr, sr)
+                self.val_time.update(time.time() - t, hr.size(0))
+                t = time.time()
                 self.psnr.update(mpsnr, hr.size(0))
-            print(self.psnr.avg)
+                if i % self.print_interval == 0:
+                    print(self.psnr.avg, self.val_data_time.avg, self.val_time.avg)
+            print("done val", self.psnr.avg)
+
+    def save(self, checkpoint_dir, name):
+        save_path = os.path.join(
+            checkpoint_dir, "{}_{}.pth".format(name, self.step*self.batch_size))
+        torch.save(self.model.stat_dict(), save_path)
+        print("saved", save_path)
 
 def psnr(hr, sr):
     hr = hr.mul(255).clamp(0, 255) 
     sr = sr.mul(255).clamp(0, 255)
     # N C H W
     mmse = torch.mean((hr - sr)**2, dim=(0, 1, 2, 3))
-    print(mmse)
     mpsnr = 255/(mmse + 1e-12)
     return mpsnr
 
 def main():
-    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=32)
+    args = argparse.ArgumentParser()
+    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48)
     trainer.train()
 
 if __name__ == '__main__':

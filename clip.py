@@ -7,11 +7,13 @@ import subprocess
 
 
 class Clip(object):
-    def __init__(self, filename, crop=None, exclude_segments=None):
+    def __init__(self, filename, crop=None, exclude_segments=None, fps_limit=True, res_limit=True):
         # TODO: handle crop and exclude segments if added later
         self.filename = filename
         self.crop = crop
         self.exclude_segments = exclude_segments
+        self.fps_limit = fps_limit
+        self.res_limit = res_limit
         probe = ffmpeg.probe(filename)
 
         for meta in probe['streams']:
@@ -36,9 +38,18 @@ class Clip(object):
             os.makedirs(valdir)
 
         basename = os.path.splitext(os.path.basename(self.filename))[0]
-        fps_str = f'fps={str(int(self.framerate))}'
+        use_fps = int(self.framerate)
+        if self.fps_limit:
+            use_fps = min(use_fps, 30)
+        fps_str = f'fps={str(use_fps)}'
         jpeg_str = os.path.join(dest_path, f'{basename}_%d.jpg')
-        ffmpeg_cmd = ['ffmpeg', '-i', self.filename, '-q:v', '5', '-vf', fps_str, jpeg_str]
+        res_str = f'scale={self.width}:{self.height}'
+        if self.res_limit:
+            # TODO: handle aspect ratio distortion
+            usewidth = min(1920, self.width)
+            useheight = min(1080, self.height) 
+            res_str = f'scale={usewidth}:{useheight}'
+        ffmpeg_cmd = ['ffmpeg', '-i', self.filename, '-q:v', '5', '-vf', res_str + ' , ' + fps_str, jpeg_str]
         subprocess.call(ffmpeg_cmd)
 
         count = 0
@@ -52,17 +63,19 @@ class Clip(object):
                     count += 1
                     num = int(name.split('_')[-1])
                     jpgs.append((filename, num))
-        half = count/2
+        
+        firstsplit = count*0.05
+        lastsplit = count*0.95
         for jpg in jpgs:
             name = jpg[0]
             num = jpg[1]
             if firstval:
-                if num < half:
+                if num < firstsplit:
                     dest = valdir
                 else:
                     dest = traindir
             else:
-                if num < half:
+                if num < lastsplit:
                     dest = traindir
                 else:
                     dest = valdir
