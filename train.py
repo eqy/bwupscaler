@@ -147,7 +147,7 @@ class Trainer():
     def save(self, checkpoint_dir, name):
         save_path = os.path.join(
             checkpoint_dir, "{}_{}.pth".format(name, self.step*self.batch_size))
-        torch.save(self.model.stat_dict(), save_path)
+        torch.save(self.refiner.stat_dict(), save_path)
         print("saved", save_path)
 
 def psnr(hr, sr):
