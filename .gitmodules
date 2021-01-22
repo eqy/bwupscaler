@@ -1,3 +1,6 @@
 [submodule "CARN-pytorch"]
 	path = CARN-pytorch
 	url = https://github.com/nmhkahn/CARN-pytorch.git
+[submodule "RCAN"]
+	path = RCAN
+	url = https://github.com/yulunzhang/RCAN.git

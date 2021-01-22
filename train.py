@@ -1,4 +1,5 @@
 import argparse
+from argparse import Namespace
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import torch
@@ -7,8 +8,10 @@ import torch.optim as optim
 import os
 import sys
 import time
-sys.path.insert(1, 'CARN-pytorch/carn')
-import model.carn_m
+#sys.path.insert(1, 'CARN-pytorch/carn')
+#import model.carn_m
+from models import rcan, carn_m
+import rcan_options
 
 from dataset import BWDataset, build_training_transform, build_validation_transform
 
@@ -38,12 +41,11 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 class Trainer():
-    def __init__(self, train_path, val_path, model, group, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None):
-        self.model = model
+    def __init__(self, train_path, val_path, model, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None):
+        # self.model = model
         self.model_name = model_name
         self.loss_fn = loss_fn
         self.learning_rate = learning_rate
-        self.group = group
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size
         self.train_path = train_path
@@ -52,7 +54,7 @@ class Trainer():
         self.writer = writer
         # TODO: revisit multiscale tunable parameter:
         self.scale = 4
-        self.refiner = model(scale=self.scale, group=self.group)
+        self.refiner = model #model(scale=self.scale, group=self.group)
         self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.refiner.parameters()), self.learning_rate)
         self.train_res = train_res
         self.val_res = val_res
@@ -95,8 +97,15 @@ class Trainer():
                 hr = hr.cuda()
                 lr = lr.cuda()
                 self.train_data_time.update(time.time() - t, hr.size(0))
-
-                sr = self.refiner(lr, self.scale)
+                if isinstance(self.refiner.module, rcan.RCAN):
+                    # scale idx 0, yikes
+                    sr = self.refiner(lr)
+                elif isinstance(self.refiner.module, carn.carn_m.Net):
+                    sr = self.refiner(lr, self.scale)
+                else:
+                    raise ValueError
+    
+                #if isinstance(self.refiner, 
                 loss = self.loss_fn(sr, hr)
               
                 # TODO: switch to best practices for zero_grad
@@ -137,16 +146,18 @@ class Trainer():
                 hr = hr.cuda()
                 self.val_data_time.update(time.time() - t, hr.size(0))
                 sr = self.refiner(lr, self.scale)
-                
+                hr = hr.mul(255).clamp(0, 255) 
+                sr = sr.mul(255).clamp(0, 255)
+
                 mpsnr = psnr(hr, sr)
                 self.val_time.update(time.time() - t, hr.size(0))
                 t = time.time()
                 self.psnr.update(mpsnr, hr.size(0))
                 if i % self.print_interval == 0:
                     print(self.psnr.avg, self.val_data_time.avg, self.val_time.avg)
-                    self.writer.add_image('HRImage/val', torchvision.utils.make_grid(hr))
-                    self.writer.add_image('LRImage/val', torchvision.utils.make_grid(lr))
-                    self.writer.add_image('SRImage/val', torchvision.utils.make_grid(sr))
+                    self.writer.add_image(f'HRImage/val_{i}', torchvision.utils.make_grid(hr), self.step)
+                    self.writer.add_image(f'LRImage/val_{i}', torchvision.utils.make_grid(lr), self.step)
+                    self.writer.add_image(f'SRImage/val_{i}', torchvision.utils.make_grid(sr), self.step)
  
             print("done val", self.psnr.avg)
             self.writer.add_scalar('PSNR/val', self.psnr.avg, self.step)
@@ -164,10 +175,9 @@ class Trainer():
         self.step = int(step)
         self.refiner.load_state_dict(torch.load(checkpoint_path))
         print("loaded model", checkpoint_path) 
+        print("step", self.step)
 
 def psnr(hr, sr):
-    hr = hr.mul(255).clamp(0, 255) 
-    sr = sr.mul(255).clamp(0, 255)
     # N C H W
     mmse = torch.mean((hr - sr)**2, dim=(0, 1, 2, 3))
     mpsnr = 255/(mmse + 1e-12)
@@ -178,9 +188,20 @@ def main():
     parser.add_argument('-n', '--name')
     parser.add_argument('--load-checkpoint')
     parser.add_argument('--decay', default=50000, type=int)
+    parser.add_argument('--model')
+    parser.add_argument('--batch-size', default=48, type=int)
+    parser.add_argument('--val-batch-size', default=48, type=int)
     args = parser.parse_args()
     writer = SummaryWriter(comment=f'{args.name}_decay{args.decay}')
-    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48, writer=writer, model_name=args.name, decay=args.decay)
+    if args.model == 'carn':
+        model = carn_m.Net(4, 1)
+        print("usin CARN")
+    elif args.model == 'rcan':
+        model = rcan.make_model(rcan_options.rcan_options())
+        print("using RCAN")  
+    else:
+        raise ValueError 
+    trainer = Trainer('data5/train', 'data5/val', model, torch.nn.L1Loss(), 1e-5, batch_size=args.batch_size, val_batch_size=args.val_batch_size, writer=writer, model_name=args.name, decay=args.decay)
     if (args.load_checkpoint is not None):
         trainer.load(args.load_checkpoint)
     trainer.train()
