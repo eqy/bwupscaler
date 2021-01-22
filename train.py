@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import torch
+import torchvision
 import torch.optim as optim
 import os
 import sys
@@ -118,8 +119,8 @@ class Trainer():
                 self.writer.add_scalar('Loss/train', loss, self.step)
                 if self.step > self.max_steps:
                     break
-            self.evaluate()
             self.save('checkpoints', self.model_name)
+            self.evaluate()
 
     def evaluate(self):
         print(f"validation... {len(self.val_loader)}")
@@ -176,9 +177,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-n', '--name')
     parser.add_argument('--load-checkpoint')
+    parser.add_argument('--decay', default=50000, type=int)
     args = parser.parse_args()
-    writer = SummaryWriter()
-    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48, writer=writer, model_name=args.name)
+    writer = SummaryWriter(comment=f'{args.name}_decay{args.decay}')
+    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48, writer=writer, model_name=args.name, decay=args.decay)
     if (args.load_checkpoint is not None):
         trainer.load(args.load_checkpoint)
     trainer.train()
