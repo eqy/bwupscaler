@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.optim as optim
 import os
@@ -14,8 +15,8 @@ from dataset import BWDataset, build_training_transform, build_validation_transf
 NUM_WORKERS=4
 CLIP=10.0
 PRINT_INTERVAL=5000
-MAX_STEPS=10000
-DECAY=150000
+MAX_STEPS=600000
+DECAY=100000
 GROUP=1
 
 class AverageMeter(object):
@@ -36,7 +37,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 class Trainer():
-    def __init__(self, train_path, val_path, model, group, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn'):
+    def __init__(self, train_path, val_path, model, group, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None):
         self.model = model
         self.model_name = model_name
         self.loss_fn = loss_fn
@@ -47,6 +48,7 @@ class Trainer():
         self.train_path = train_path
         self.val_path = val_path
         self.decay = decay
+        self.writer = writer
         # TODO: revisit multiscale tunable parameter:
         self.scale = 4
         self.refiner = model(scale=self.scale, group=self.group)
@@ -75,7 +77,7 @@ class Trainer():
         self.psnr = AverageMeter()
 
     def decay_learning_rate(self):
-        learning_rate = self.learning_rate * (0.5 ** (self.step*self.batch_size//self.decay))
+        learning_rate = self.learning_rate * (0.5 ** (self.step//self.decay))
         return learning_rate
 
     def train(self):
@@ -113,8 +115,7 @@ class Trainer():
 
                 if self.step % self.print_interval == 0:
                     print(self.loss.avg, self.train_data_time.avg, self.train_time.avg)
-
-                
+                self.writer.add_scalar('Loss/train', loss, self.step)
                 if self.step > self.max_steps:
                     break
             self.evaluate()
@@ -142,13 +143,26 @@ class Trainer():
                 self.psnr.update(mpsnr, hr.size(0))
                 if i % self.print_interval == 0:
                     print(self.psnr.avg, self.val_data_time.avg, self.val_time.avg)
+                    self.writer.add_image('HRImage/val', torchvision.utils.make_grid(hr))
+                    self.writer.add_image('LRImage/val', torchvision.utils.make_grid(lr))
+                    self.writer.add_image('SRImage/val', torchvision.utils.make_grid(sr))
+ 
             print("done val", self.psnr.avg)
+            self.writer.add_scalar('PSNR/val', self.psnr.avg, self.step)
 
     def save(self, checkpoint_dir, name):
         save_path = os.path.join(
-            checkpoint_dir, "{}_{}.pth".format(name, self.step*self.batch_size))
-        torch.save(self.refiner.stat_dict(), save_path)
+            checkpoint_dir, "{}_{}.pth".format(name, self.step))
+        torch.save(self.refiner.state_dict(), save_path)
         print("saved", save_path)
+
+    def load(self, checkpoint_path):
+        basename = os.path.basename(checkpoint_path)
+        name, ext = os.path.splitext(basename)
+        step = name.split('_')[-1]
+        self.step = int(step)
+        self.refiner.load_state_dict(torch.load(checkpoint_path))
+        print("loaded model", checkpoint_path) 
 
 def psnr(hr, sr):
     hr = hr.mul(255).clamp(0, 255) 
@@ -159,8 +173,14 @@ def psnr(hr, sr):
     return mpsnr
 
 def main():
-    args = argparse.ArgumentParser()
-    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-n', '--name')
+    parser.add_argument('--load-checkpoint')
+    args = parser.parse_args()
+    writer = SummaryWriter()
+    trainer = Trainer('data5/train', 'data5/val', model.carn_m.Net, GROUP, torch.nn.L1Loss(), 1e-5, batch_size=48, writer=writer, model_name=args.name)
+    if (args.load_checkpoint is not None):
+        trainer.load(args.load_checkpoint)
     trainer.train()
 
 if __name__ == '__main__':
