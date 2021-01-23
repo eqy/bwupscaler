@@ -22,7 +22,7 @@ torch.backends.cudnn.benchmark = True
 CLIP=10.0
 PRINT_INTERVAL=1000
 MAX_STEPS=600000
-DECAY=100000
+DECAY=10
 GROUP=1
 
 class AverageMeter(object):
@@ -86,6 +86,17 @@ class Trainer():
         learning_rate = self.learning_rate * (0.5 ** ((self.step//self.train_len) //self.decay))
         return learning_rate
 
+    def run_model(self, lr):
+        if isinstance(self.refiner.module, rcan.RCAN):
+            # scale idx 0, yikes
+            sr = self.refiner(lr)
+        elif isinstance(self.refiner.module, carn_m.Net):
+            sr = self.refiner(lr, self.scale)
+        else:
+            print(type(self.refiner.module))
+            raise ValueError
+        return sr
+
     def train(self):
         learning_rate = self.learning_rate
         while True:
@@ -100,14 +111,7 @@ class Trainer():
                 hr = hr.cuda()
                 lr = lr.cuda()
                 self.train_data_time.update(time.time() - t, hr.size(0))
-                if isinstance(self.refiner.module, rcan.RCAN):
-                    # scale idx 0, yikes
-                    sr = self.refiner(lr)
-                elif isinstance(self.refiner.module, carn_m.Net):
-                    sr = self.refiner(lr, self.scale)
-                else:
-                    print(type(self.refiner.module))
-                    raise ValueError
+                sr = self.run_model(lr)
     
                 #if isinstance(self.refiner, 
                 loss = self.loss_fn(sr, hr)
@@ -121,6 +125,7 @@ class Trainer():
                 self.train_time.update(time.time() - t, hr.size(0))
                 t = time.time()
                 new_learning_rate = self.decay_learning_rate()
+                self.writer.add_scalar('LearningRate', new_learning_rate, self.step)
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = new_learning_rate
                 
@@ -131,8 +136,8 @@ class Trainer():
                 if self.step % self.print_interval == 0:
                     print(self.loss.avg, self.train_data_time.avg, self.train_time.avg)
                 self.writer.add_scalar('Loss/train', loss, self.step)
-                del loss
-                del sr
+                #del loss
+                #del sr
                 if self.step > self.max_steps:
                     break
             self.save('checkpoints', self.model_name)
@@ -152,7 +157,7 @@ class Trainer():
                 lr = lr.cuda()
                 hr = hr.cuda()
                 self.val_data_time.update(time.time() - t, hr.size(0))
-                sr = self.refiner(lr, self.scale)
+                sr = self.run_model(lr)
 
                 if i % self.print_interval == 0:
                     print(self.psnr.avg, self.val_data_time.avg, self.val_time.avg)
@@ -190,7 +195,7 @@ def psnr(hr, sr):
     sr = sr.mul(255).clamp(0, 255)
 
     mmse = torch.mean((hr - sr)**2, dim=(0, 1, 2, 3))
-    mpsnr = 255/(mmse + 1e-12)
+    mpsnr = 10*torch.log10((65025/(mmse + 1e-12)))
     return mpsnr
 
 def main():
@@ -211,7 +216,7 @@ def main():
         print("using RCAN")  
     else:
         raise ValueError 
-    trainer = Trainer('data5/train', 'data5/val', model, torch.nn.L1Loss(), 1e-5, batch_size=args.batch_size, val_batch_size=args.val_batch_size, writer=writer, model_name=args.name, decay=args.decay)
+    trainer = Trainer('data5/train', 'data5/val', model, torch.nn.L1Loss(), 1e-5, batch_size=args.batch_size, val_batch_size=args.val_batch_size, writer=writer, model_name=args.name, decay=args.decay, num_workers=4)
     if (args.load_checkpoint is not None):
         trainer.load(args.load_checkpoint)
     trainer.train()
