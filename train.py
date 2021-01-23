@@ -15,10 +15,12 @@ import rcan_options
 
 from dataset import BWDataset, build_training_transform, build_validation_transform
 
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 
-NUM_WORKERS=4
+
 CLIP=10.0
-PRINT_INTERVAL=5000
+PRINT_INTERVAL=1000
 MAX_STEPS=600000
 DECAY=100000
 GROUP=1
@@ -41,7 +43,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 class Trainer():
-    def __init__(self, train_path, val_path, model, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None):
+    def __init__(self, train_path, val_path, model, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None, num_workers=1):
         # self.model = model
         self.model_name = model_name
         self.loss_fn = loss_fn
@@ -59,13 +61,13 @@ class Trainer():
         self.train_res = train_res
         self.val_res = val_res
         self.train_dataset = BWDataset(train_path, build_training_transform(train_res))
-        self.train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=self.val_batch_size, shuffle=True, num_workers=NUM_WORKERS)
+        self.train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=self.val_batch_size, shuffle=True, num_workers=num_workers)
 
         self.val_dataset = BWDataset(val_path, build_validation_transform(val_res))
         # TODO: parametrizable source resolution
         samples_per_val = np.ceil(1920/val_res[0])*np.ceil(1080/val_res[1])
         actual_val_batch_size = max(int(self.val_batch_size/samples_per_val), 1)
-        self.val_loader = torch.utils.data.DataLoader(self.val_dataset, batch_size=actual_val_batch_size, shuffle=True, num_workers=NUM_WORKERS)
+        self.val_loader = torch.utils.data.DataLoader(self.val_dataset, batch_size=actual_val_batch_size, shuffle=True, num_workers=num_workers)
         self.step = 0
         self.print_interval = PRINT_INTERVAL
         self.max_steps = MAX_STEPS
@@ -78,9 +80,10 @@ class Trainer():
         self.val_data_time = AverageMeter()
         self.val_time = AverageMeter()
         self.psnr = AverageMeter()
+        self.train_len = len(self.train_dataset)
 
     def decay_learning_rate(self):
-        learning_rate = self.learning_rate * (0.5 ** (self.step//self.decay))
+        learning_rate = self.learning_rate * (0.5 ** ((self.step//self.train_len) //self.decay))
         return learning_rate
 
     def train(self):
@@ -100,9 +103,10 @@ class Trainer():
                 if isinstance(self.refiner.module, rcan.RCAN):
                     # scale idx 0, yikes
                     sr = self.refiner(lr)
-                elif isinstance(self.refiner.module, carn.carn_m.Net):
+                elif isinstance(self.refiner.module, carn_m.Net):
                     sr = self.refiner(lr, self.scale)
                 else:
+                    print(type(self.refiner.module))
                     raise ValueError
     
                 #if isinstance(self.refiner, 
@@ -111,7 +115,8 @@ class Trainer():
                 # TODO: switch to best practices for zero_grad
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm(self.refiner.parameters(), CLIP)
+                # TODO: why does CARN training need this?
+                # torch.nn.utils.clip_grad_norm(self.refiner.parameters(), CLIP)
                 self.optimizer.step() 
                 self.train_time.update(time.time() - t, hr.size(0))
                 t = time.time()
@@ -119,13 +124,15 @@ class Trainer():
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = new_learning_rate
                 
-                self.loss.update(loss, hr.size(0))
+                self.loss.update(loss.detach(), hr.size(0))
 
                 self.step += 1
 
                 if self.step % self.print_interval == 0:
                     print(self.loss.avg, self.train_data_time.avg, self.train_time.avg)
                 self.writer.add_scalar('Loss/train', loss, self.step)
+                del loss
+                del sr
                 if self.step > self.max_steps:
                     break
             self.save('checkpoints', self.model_name)
@@ -146,19 +153,19 @@ class Trainer():
                 hr = hr.cuda()
                 self.val_data_time.update(time.time() - t, hr.size(0))
                 sr = self.refiner(lr, self.scale)
-                hr = hr.mul(255).clamp(0, 255) 
-                sr = sr.mul(255).clamp(0, 255)
 
-                mpsnr = psnr(hr, sr)
-                self.val_time.update(time.time() - t, hr.size(0))
-                t = time.time()
-                self.psnr.update(mpsnr, hr.size(0))
                 if i % self.print_interval == 0:
                     print(self.psnr.avg, self.val_data_time.avg, self.val_time.avg)
                     self.writer.add_image(f'HRImage/val_{i}', torchvision.utils.make_grid(hr), self.step)
                     self.writer.add_image(f'LRImage/val_{i}', torchvision.utils.make_grid(lr), self.step)
+                    sr = sr.clamp(0.0, 1.0)
                     self.writer.add_image(f'SRImage/val_{i}', torchvision.utils.make_grid(sr), self.step)
- 
+
+                mpsnr = psnr(hr, sr)
+                self.val_time.update(time.time() - t, hr.size(0))
+                t = time.time()
+                self.psnr.update(mpsnr.detach(), hr.size(0))
+
             print("done val", self.psnr.avg)
             self.writer.add_scalar('PSNR/val', self.psnr.avg, self.step)
 
@@ -179,6 +186,9 @@ class Trainer():
 
 def psnr(hr, sr):
     # N C H W
+    hr = hr.mul(255).clamp(0, 255) 
+    sr = sr.mul(255).clamp(0, 255)
+
     mmse = torch.mean((hr - sr)**2, dim=(0, 1, 2, 3))
     mpsnr = 255/(mmse + 1e-12)
     return mpsnr
@@ -193,9 +203,9 @@ def main():
     parser.add_argument('--val-batch-size', default=48, type=int)
     args = parser.parse_args()
     writer = SummaryWriter(comment=f'{args.name}_decay{args.decay}')
-    if args.model == 'carn':
-        model = carn_m.Net(4, 1)
-        print("usin CARN")
+    if args.model == 'carn-m':
+        model = carn_m.Net(scale=4, group=1)
+        print("using CARN-m")
     elif args.model == 'rcan':
         model = rcan.make_model(rcan_options.rcan_options())
         print("using RCAN")  
