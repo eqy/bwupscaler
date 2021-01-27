@@ -10,7 +10,7 @@ import sys
 import time
 #sys.path.insert(1, 'CARN-pytorch/carn')
 #import model.carn_m
-from models import rcan, carn_m
+from models import rcan, carn_m, carn
 import rcan_options
 
 from dataset import BWDataset, build_training_transform, build_validation_transform
@@ -22,7 +22,7 @@ torch.backends.cudnn.benchmark = True
 CLIP=10.0
 PRINT_INTERVAL=1000
 MAX_STEPS=600000
-DECAY=10
+DECAY=2
 GROUP=1
 
 class AverageMeter(object):
@@ -42,7 +42,45 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-class Trainer():
+class Base(object):
+    def run_model(self, lr):
+        if isinstance(self.refiner.module, rcan.RCAN):
+            # scale idx 0, yikes
+            sr = self.refiner(lr)
+        elif isinstance(self.refiner.module, carn_m.Net):
+            sr = self.refiner(lr, self.scale)
+        elif isinstance(self.refiner.module, carn.Net):
+            sr = self.refiner(lr, self.scale)
+        else:
+            print(type(self.refiner.module))
+            raise ValueError
+        return sr
+
+    def save(self, checkpoint_dir, name):
+        save_path = os.path.join(
+            checkpoint_dir, "{}_{}.pth".format(name, self.step))
+        torch.save(self.refiner.state_dict(), save_path)
+        print("saved", save_path)
+
+    def load(self, checkpoint_path):
+        basename = os.path.basename(checkpoint_path)
+        name, ext = os.path.splitext(basename)
+        step = name.split('_')[-1]
+        self.step = int(step)
+        self.refiner.load_state_dict(torch.load(checkpoint_path))
+        print("loaded model", checkpoint_path) 
+        print("step", self.step)
+
+    def inference_mode(self):
+        self.refiner.eval()
+
+
+class Inferencer(Base):
+    def __init__(self, model):
+        self.refiner = model
+
+
+class Trainer(Base):
     def __init__(self, train_path, val_path, model, loss_fn, learning_rate, decay=DECAY, train_res=(256, 256), val_res=(256, 256), batch_size=32, val_batch_size=32, model_name='carn', writer=None, num_workers=1):
         # self.model = model
         self.model_name = model_name
@@ -83,19 +121,9 @@ class Trainer():
         self.train_len = len(self.train_dataset)
 
     def decay_learning_rate(self):
-        learning_rate = self.learning_rate * (0.5 ** ((self.step//self.train_len) //self.decay))
+        learning_rate = self.learning_rate * (0.5 ** (((self.step*self.batch_size)//self.train_len) //self.decay))
         return learning_rate
 
-    def run_model(self, lr):
-        if isinstance(self.refiner.module, rcan.RCAN):
-            # scale idx 0, yikes
-            sr = self.refiner(lr)
-        elif isinstance(self.refiner.module, carn_m.Net):
-            sr = self.refiner(lr, self.scale)
-        else:
-            print(type(self.refiner.module))
-            raise ValueError
-        return sr
 
     def train(self):
         learning_rate = self.learning_rate
@@ -174,20 +202,6 @@ class Trainer():
             print("done val", self.psnr.avg)
             self.writer.add_scalar('PSNR/val', self.psnr.avg, self.step)
 
-    def save(self, checkpoint_dir, name):
-        save_path = os.path.join(
-            checkpoint_dir, "{}_{}.pth".format(name, self.step))
-        torch.save(self.refiner.state_dict(), save_path)
-        print("saved", save_path)
-
-    def load(self, checkpoint_path):
-        basename = os.path.basename(checkpoint_path)
-        name, ext = os.path.splitext(basename)
-        step = name.split('_')[-1]
-        self.step = int(step)
-        self.refiner.load_state_dict(torch.load(checkpoint_path))
-        print("loaded model", checkpoint_path) 
-        print("step", self.step)
 
 def psnr(hr, sr):
     # N C H W
@@ -198,25 +212,30 @@ def psnr(hr, sr):
     mpsnr = 10*torch.log10((65025/(mmse + 1e-12)))
     return mpsnr
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-n', '--name')
     parser.add_argument('--load-checkpoint')
-    parser.add_argument('--decay', default=50000, type=int)
+    parser.add_argument('--decay', default=2, type=int)
     parser.add_argument('--model')
     parser.add_argument('--batch-size', default=48, type=int)
     parser.add_argument('--val-batch-size', default=48, type=int)
+    parser.add_argument('--learning-rate', default=1e-4, type=float)
     args = parser.parse_args()
     writer = SummaryWriter(comment=f'{args.name}_decay{args.decay}')
     if args.model == 'carn-m':
         model = carn_m.Net(scale=4, group=1)
         print("using CARN-m")
+    elif args.model == 'carn':
+        model = carn.Net(scale=4, group=1)
+        print("using full CARN")
     elif args.model == 'rcan':
         model = rcan.make_model(rcan_options.rcan_options())
         print("using RCAN")  
     else:
         raise ValueError 
-    trainer = Trainer('data5/train', 'data5/val', model, torch.nn.L1Loss(), 1e-5, batch_size=args.batch_size, val_batch_size=args.val_batch_size, writer=writer, model_name=args.name, decay=args.decay, num_workers=4)
+    trainer = Trainer('data5/train', 'data5/val', model, torch.nn.L1Loss(), args.learning_rate, batch_size=args.batch_size, val_batch_size=args.val_batch_size, writer=writer, model_name=args.name, decay=args.decay, num_workers=4)
     if (args.load_checkpoint is not None):
         trainer.load(args.load_checkpoint)
     trainer.train()

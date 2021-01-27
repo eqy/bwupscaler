@@ -130,7 +130,7 @@ def build_inference_transform(input_resolution=(64, 64), scale=4, overscan=8):
                 assert vstart >= 0 and hstart >= 0 and vend <= image.height and hend <= image.width
                 lr = F.crop(image, vstart, hstart, output_height, output_width)
                 lrs.append(totensor(lr))
-        return (torch.stack(lrs))
+        return torch.stack(lrs)
     return _transform 
 
 
@@ -187,14 +187,15 @@ def assemble_inference_image(total_input_resolution=(512, 512), input_resolution
 
  
 class BWDataset(torch.utils.data.Dataset):
-    def __init__(self, path, transform):
+    def __init__(self, path, transform, extension='.jpg', passfilename=False):
         self.path = path
         self.transform = transform
         self.images = list()
+        self.passfilename = passfilename
         for dirpath, dirnames, filenames in os.walk(path):
             for filename in filenames:
                 name, ext = os.path.splitext(filename)
-                if ext == '.jpg':
+                if ext == extension:
                     self.images.append(os.path.join(dirpath, filename))
 
     def __getitem__(self, index):
@@ -203,6 +204,8 @@ class BWDataset(torch.utils.data.Dataset):
         # treat everything as 1920x1080 for now
         if (image.height, image.width) != (1080, 1920):
             image = F.resize(image, (1080, 1920))
+        if self.passfilename:
+            return (self.transform(image), image_path)
         return self.transform(image) 
 
     def __len__(self):
@@ -244,8 +247,9 @@ def testgeneration(path):
         break
     print("testing assembly...")
     infdataset = BWDataset(path, build_inference_transform((256, 256), overscan=32))
+    infdataloader = torch.utils.data.DataLoader(valdataset, batch_size=1, shuffle=False)
     assemble_transform = assemble_inference_image((270, 480))
-    for idx, inp_patches in enumerate(infdataset):
+    for idx, (inp_patches, _) in enumerate(infdataloader):
         dummy_lr_patches = torchvision.transforms.functional.resize(inp_patches, (80, 80))
         resized = torchvision.transforms.functional.resize(dummy_lr_patches, (320, 320))
         assembled = assemble_transform(resized)

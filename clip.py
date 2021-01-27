@@ -1,9 +1,13 @@
 import ast
+from dataset import assemble_inference_image, BWDataset, build_inference_transform
 import csv
 import ffmpeg
 import os
+import progress
 import shutil
 import subprocess
+import torch
+import uuid
 
 
 class Clip(object):
@@ -14,7 +18,11 @@ class Clip(object):
         self.exclude_segments = exclude_segments
         self.fps_limit = fps_limit
         self.res_limit = res_limit
-        probe = ffmpeg.probe(filename)
+        try:
+            probe = ffmpeg.probe(filename)
+        except ffmpeg._run.Error as e:
+            print(e.stderr)
+            raise e
 
         for meta in probe['streams']:
             if meta['codec_type'] == 'video': 
@@ -25,6 +33,33 @@ class Clip(object):
         self.width = int(video_meta['width'])
         # LOL THIS LOOKS UNSAFE
         self.framerate = eval(video_meta['avg_frame_rate'])
+
+    def upscale(self, output_name, upscale_fn, scale=4, input_patch_size=(64, 64), overscan=8):
+        tempdir = str(uuid.uuid4())
+        tempprocesseddir = os.path.join(tempdir, 'processed/')
+        os.makedirs(tempdir)
+        os.makedirs(tempprocesseddir)
+        png_str = os.path.join(tempdir, f'frame_%d.png')
+        res_str = f'scale={self.width}:{self.height}'
+        ffmpeg_cmd = ['ffmpeg', '-i', self.filename, png_str]
+        print(ffmpeg_cmd)
+        subprocess.call(ffmpeg_cmd)
+        inference_transform = build_inference_transform(input_resolution=input_patch_size,
+                                                        scale=scale,
+                                                        overscan=overscan)
+        inference_dataset = BWDataset(tempdir, inference_transform, extension='.png', passfilename=True)
+        inference_dataloader = torch.utils.data.DataLoader(inference_dataset, batch_size=1, shuffle=False) 
+        assemble_transform = assemble_inference_image((self.height, self.width),
+                                                      input_patch_size,
+                                                      scale=scale,
+                                                      overscan=overscan)
+        for (lr, filepath) in inference_dataloader:
+            sr = upscale_fn(lr)
+            sr_single = assemble_transform(sr)
+            basename = os.path.basename(filepath[0])
+            destpath = os.path.join(tempprocesseddir, basename)
+            torchvision.transforms.functional.to_pil_image(sr).save(destpath)
+        #os.unlink(tempdir) 
 
 
     def extract_data(self, dest_path, firstval=False):
