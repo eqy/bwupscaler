@@ -42,6 +42,7 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+
 class Base(object):
     def run_model(self, lr):
         if isinstance(self.refiner.module, rcan.RCAN):
@@ -77,7 +78,12 @@ class Base(object):
 
 class Inferencer(Base):
     def __init__(self, model):
-        self.refiner = model
+        self.refiner = torch.nn.DataParallel(model)
+
+    def run_model(self, lr):
+        # memory usage lmao
+        with torch.no_grad():
+            super().run_model(lr)
 
 
 class Trainer(Base):
@@ -123,7 +129,6 @@ class Trainer(Base):
     def decay_learning_rate(self):
         learning_rate = self.learning_rate * (0.5 ** (((self.step*self.batch_size)//self.train_len) //self.decay))
         return learning_rate
-
 
     def train(self):
         learning_rate = self.learning_rate

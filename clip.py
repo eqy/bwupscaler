@@ -54,6 +54,7 @@ class Clip(object):
                                                       scale=scale,
                                                       overscan=overscan)
         for (lr, filepath) in inference_dataloader:
+            lr = torch.squeeze(lr)
             sr = upscale_fn(lr)
             sr_single = assemble_transform(sr)
             basename = os.path.basename(filepath[0])
