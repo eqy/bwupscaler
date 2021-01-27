@@ -176,9 +176,6 @@ def assemble_inference_image(total_input_resolution=(512, 512), input_resolution
                 vend = scale*patchvend
                 hstart = scale*patchhstart
                 hend = scale*patchhend
-                print(i, j)
-                print(destvstart, destvend, desthstart, desthend)
-                print(vstart, vend, hstart, hend)
                 assembled_tensor[:,
                                  destvstart:destvend,
                                  desthstart:desthend] = cur_chunk[:,
