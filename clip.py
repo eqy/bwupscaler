@@ -50,7 +50,7 @@ class Clip(object):
                                                         overscan=overscan)
         inference_dataset = BWDataset(tempdir, inference_transform, extension='.png', passfilename=True, resizetarget=resizetarget)
         inference_dataloader = torch.utils.data.DataLoader(inference_dataset, batch_size=1, shuffle=False, pin_memory=True) 
-        assemble_transform = assemble_inference_image((self.height, self.width),
+        assemble_transform = assemble_inference_image(resizetarget,
                                                       input_patch_size,
                                                       scale=scale,
                                                       overscan=overscan)
