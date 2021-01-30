@@ -20,7 +20,7 @@ def main():
     trainer.load('checkpoints/rcan_test_noshift_257424.pth')
     trainer.inference_mode()
     upscale_fn = build_upscale_fn(trainer)
-    source.upscale("test_nopreproc.mp4", upscale_fn)
+    source.upscale("test_nopreproc.mp4", upscale_fn, resizetarget=(295, 393))
 
 
 if __name__ == '__main__':

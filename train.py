@@ -83,7 +83,7 @@ class Inferencer(Base):
     def run_model(self, lr):
         # memory usage lmao
         with torch.no_grad():
-            super().run_model(lr)
+            return super().run_model(lr)
 
 
 class Trainer(Base):

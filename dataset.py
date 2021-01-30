@@ -187,11 +187,12 @@ def assemble_inference_image(total_input_resolution=(512, 512), input_resolution
 
  
 class BWDataset(torch.utils.data.Dataset):
-    def __init__(self, path, transform, extension='.jpg', passfilename=False):
+    def __init__(self, path, transform, extension='.jpg', passfilename=False, resizetarget=(1080, 1920)):
         self.path = path
         self.transform = transform
         self.images = list()
         self.passfilename = passfilename
+        self.resizetarget = resizetarget
         for dirpath, dirnames, filenames in os.walk(path):
             for filename in filenames:
                 name, ext = os.path.splitext(filename)
@@ -202,8 +203,8 @@ class BWDataset(torch.utils.data.Dataset):
         image_path = self.images[index]
         image = pil_loader(image_path)
         # treat everything as 1920x1080 for now
-        if (image.height, image.width) != (1080, 1920):
-            image = F.resize(image, (1080, 1920))
+        if self.resizetarget is not None and (image.height, image.width) != self.resizetarget:
+            image = F.resize(image, self.resizetarget)
         if self.passfilename:
             return (self.transform(image), image_path)
         return self.transform(image) 
