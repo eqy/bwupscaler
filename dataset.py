@@ -29,12 +29,12 @@ def build_training_transform(resolution=(256, 256)):
         hr = randomcrop(image)
         hr = randomverticalflip(hr)
         hr = randomhorizontalflip(hr)
-        lrresize = random.randint(16, min(resolution))
+        lrresize = random.randint(8, min(resolution))
         lr = F.resize(hr, lrresize)
         lr = F.resize(lr, (resolution[0]//4, resolution[1]//4))
         # albumentations refusing to work on PIL images is lame
         lr_np = np.array(lr)
-        lr_np = jpegcompression(image=lr_np)['image']
+        lr_np = jpegcompression(image=lr_np, quality_lower=0, p=0.9)['image']
         #lr_np = colorjitter(image=lr_np)['image']
         lr = Image.fromarray(lr_np)
         return (totensor(hr), totensor(lr))
@@ -82,8 +82,12 @@ def build_inference_transform(input_resolution=(64, 64), scale=4, overscan=8):
     totensor = torchvision.transforms.ToTensor()
     
     def _transform(image):
-        vchunks = int(np.ceil(image.height/input_resolution[0]))
-        hchunks = int(np.ceil(image.width/input_resolution[1]))
+        orig_height = image.height
+        orig_width = image.width
+        vchunks = int(np.ceil(orig_height/input_resolution[0]))
+        hchunks = int(np.ceil(orig_width/input_resolution[1]))
+        # disgusting literal edge case
+        image = F.pad(image, (0, 0, overscan, overscan))
         output_height = input_resolution[0] + 2*overscan
         output_width = input_resolution[1] + 2*overscan
         lrs = list()
@@ -119,14 +123,14 @@ def build_inference_transform(input_resolution=(64, 64), scale=4, overscan=8):
                     vend += -vstart
                     vstart = 0
                 elif i == vchunks - 1:
-                    vstart -= (vend - image.height)
-                    vend = image.height
+                    vstart -= (vend - orig_height)
+                    vend = orig_height
                 if j == 0:
                     hend += -hstart
                     hstart = 0
                 elif j == hchunks - 1:
-                    hstart -= (hend - image.width)
-                    hend = image.width
+                    hstart -= (hend - orig_width)
+                    hend = orig_width
                 assert vstart >= 0 and hstart >= 0 and vend <= image.height and hend <= image.width
                 lr = F.crop(image, vstart, hstart, output_height, output_width)
                 lrs.append(totensor(lr))
