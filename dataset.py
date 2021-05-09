@@ -41,6 +41,34 @@ def build_training_transform(resolution=(256, 256)):
 
     return _transform
 
+
+def build_training_transform_with_reference(resolution=(256, 256)):
+    jpegcompression = albumentations.augmentations.transforms.JpegCompression(0, 100)
+    totensor = torchvision.transforms.ToTensor()
+
+    # refimage is for when we have an actual hq reference image (e.g., old to new graphics)
+    def _transform(image, refimage):
+        assert image.shape == refimage.shape
+        i, j, h, w = torchvision.transforms.RandomCrop.get_params(refimage, resolution)
+        hr = F.crop(image, i, j, h, w)
+        hr_ref = F.crop(refimage, i, j, h, w)
+        if torch.rand(1) < p:
+            hr = F.hflip(hr)
+            hr_ref = F.hflip(hr_ref)
+        if torch.rand(1) < p:
+            hr = F.vflip(hr)
+            hr_ref = F.vflip(hr_ref)
+        lrresize = random.randint(8, min(resolution))
+        lr = F.resize(hr, lrresize)
+        lr = F.resize(lr, (resolution[0]//4, resolution[1]//4))
+        # albumentations refusing to work on PIL images is lame
+        lr_np = np.array(lr)
+        lr_np = jpegcompression(image=lr_np, quality_lower=0, p=0.9)['image']
+        lr = Image.fromarray(lr_np)
+        return (totensor(hr_ref), totensor(lr))
+
+    return _transform
+
 # validation transform
 # split image into test size pieces
 # resize each patch to 1/4
@@ -49,7 +77,8 @@ def build_training_transform(resolution=(256, 256)):
 def build_validation_transform(resolution=(256, 256), scale=4):
     totensor = torchvision.transforms.ToTensor()
 
-    def _transform(image):
+    # refimage is when we have an actual hq reference image (e.g., old to new graphics)
+    def _transform(image, refimage=None):
         vchunks = int(np.ceil(image.height/resolution[0]))
         hchunks = int(np.ceil(image.width/resolution[1]))
         padded_height = vchunks*resolution[0]
@@ -61,6 +90,7 @@ def build_validation_transform(resolution=(256, 256), scale=4):
         image = F.pad(image, padding=padding)
         hrs = list()
         lrs = list() 
+        hr_refs = list()
         for i in range(vchunks):
             for j in range(hchunks):
                 hr = F.crop(image, 
@@ -71,6 +101,16 @@ def build_validation_transform(resolution=(256, 256), scale=4):
                 lr = F.resize(hr, (resolution[0]//scale, resolution[1]//scale))
                 hrs.append(totensor(hr))
                 lrs.append(totensor(lr))
+                if refimage is not None:
+                    assert refimage.shape == image.shape 
+                    hr_ref = F.crop(refimage,
+                                    i*resolution[0],
+                                    j*resolution[1],
+                                    resolution[0],
+                                    resolution[1])
+                    hr_refs.append(totensor(hr_ref))
+        if refimage is not None:
+            return (torch.stack(hr_refs), torch.stack(lrs))
         return (torch.stack(hrs), torch.stack(lrs))
 
     return _transform
@@ -197,13 +237,13 @@ class BWDataset(torch.utils.data.Dataset):
         self.images = list()
         self.passfilename = passfilename
         self.resizetarget = resizetarget
-        self.filter = filterfunc
+        self.filterfunc = filterfunc
         for dirpath, dirnames, filenames in os.walk(path):
             for filename in filenames:
                 name, ext = os.path.splitext(filename)
                 if ext == extension:
-                    if self.filter is None or self.filter(filename):
-                        self.images.append(os.path.join(dirpath, filename))
+                    if self.filterfunc is None or self.filterfunc(name):
+                      self.images.append(os.path.join(dirpath, filename))
 
     def __getitem__(self, index):
         image_path = self.images[index]
@@ -217,6 +257,22 @@ class BWDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.images)
+
+
+class BWPairDataset(BWDataset):
+    def __init__(self, srcpath, tgtpath, transform, extension='.png', resizetarget=(1080, 1920), filterfunc=None):
+        super().__init__(srcpath, transform, extension, resizetarget, filterfunc)
+    
+    def __getitem__(self, index):
+        image_path = self.images[index]
+        image = pil_loader(image_path)
+        ref_image_path = os.path.join(tgtpath, os.path.basename(image_path)) 
+        refimage = pil_loader(ref_image_path)
+        
+        if self.resizetarget is not None and (image.height, image.width) != self.resizetarget:
+            image = F.resize(image, self.resizetarget)
+            refimage = F.resize(refimage, sef.resizetarget)
+        return self.transform(image, refimage) 
 
 
 class FusedDataset(torch.utils.data.Dataset):
