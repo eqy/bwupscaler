@@ -191,17 +191,19 @@ def assemble_inference_image(total_input_resolution=(512, 512), input_resolution
 
  
 class BWDataset(torch.utils.data.Dataset):
-    def __init__(self, path, transform, extension='.jpg', passfilename=False, resizetarget=(1080, 1920)):
+    def __init__(self, path, transform, extension='.jpg', passfilename=False, resizetarget=(1080, 1920), filterfunc=None):
         self.path = path
         self.transform = transform
         self.images = list()
         self.passfilename = passfilename
         self.resizetarget = resizetarget
+        self.filter = filterfunc
         for dirpath, dirnames, filenames in os.walk(path):
             for filename in filenames:
                 name, ext = os.path.splitext(filename)
                 if ext == extension:
-                    self.images.append(os.path.join(dirpath, filename))
+                    if self.filter is None or self.filter(filename):
+                        self.images.append(os.path.join(dirpath, filename))
 
     def __getitem__(self, index):
         image_path = self.images[index]
@@ -215,6 +217,25 @@ class BWDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.images)
+
+
+class FusedDataset(torch.utils.data.Dataset):
+    def __init__(self, datasets):
+        self.datasets = datasets
+        self.len = sum([len(dataset) for dataset in datasets])
+        
+    def __getitem__(self, index):
+        dataset = self.datasets[0]
+        idx = index
+        for dataset in self.datasets:
+            if idx >= len(dataset):
+                idx -= len(dataset)
+            else:
+                return dataset[idx] 
+        raise ValueError
+
+    def __len__(self):
+        return self.len
 
 
 def testgeneration(path):
