@@ -48,7 +48,7 @@ def build_training_transform_with_reference(resolution=(256, 256)):
 
     # refimage is for when we have an actual hq reference image (e.g., old to new graphics)
     def _transform(image, refimage):
-        assert image.shape == refimage.shape
+        assert image.size == refimage.size
         i, j, h, w = torchvision.transforms.RandomCrop.get_params(refimage, resolution)
         hr = F.crop(image, i, j, h, w)
         hr_ref = F.crop(refimage, i, j, h, w)
@@ -102,7 +102,7 @@ def build_validation_transform(resolution=(256, 256), scale=4):
                 hrs.append(totensor(hr))
                 lrs.append(totensor(lr))
                 if refimage is not None:
-                    assert refimage.shape == image.shape 
+                    assert refimage.size == image.size 
                     hr_ref = F.crop(refimage,
                                     i*resolution[0],
                                     j*resolution[1],
@@ -261,12 +261,13 @@ class BWDataset(torch.utils.data.Dataset):
 
 class BWPairDataset(BWDataset):
     def __init__(self, srcpath, tgtpath, transform, extension='.png', resizetarget=(1080, 1920), filterfunc=None):
-        super().__init__(srcpath, transform, extension, resizetarget, filterfunc)
+        super().__init__(srcpath, transform, extension, resizetarget=resizetarget, filterfunc=filterfunc)
+        self.tgtpath = tgtpath
     
     def __getitem__(self, index):
         image_path = self.images[index]
         image = pil_loader(image_path)
-        ref_image_path = os.path.join(tgtpath, os.path.basename(image_path)) 
+        ref_image_path = os.path.join(self.tgtpath, os.path.basename(image_path)) 
         refimage = pil_loader(ref_image_path)
         
         if self.resizetarget is not None and (image.height, image.width) != self.resizetarget:
