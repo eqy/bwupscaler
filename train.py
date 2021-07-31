@@ -120,6 +120,7 @@ class Trainer(Base):
         self.val_time = AverageMeter()
         self.psnr = AverageMeter()
         self.train_len = len(self.train_dataset)
+        self.quicktest = True
 
     def decay_learning_rate(self):
         learning_rate = self.learning_rate * (0.5 ** (((self.step*self.batch_size)//self.train_len) //self.decay))
@@ -166,7 +167,7 @@ class Trainer(Base):
                 self.writer.add_scalar('Loss/train', loss, self.step)
                 #del loss
                 #del sr
-                if self.step > self.max_steps:
+                if self.step > self.max_steps or self.quicktest:
                     break
             self.save('checkpoints', self.model_name)
             self.evaluate()

@@ -42,7 +42,7 @@ def build_training_transform(resolution=(256, 256)):
     return _transform
 
 
-def build_training_transform_with_reference(resolution=(256, 256)):
+def build_training_transform_with_reference(resolution=(256, 256), p=0.5):
     jpegcompression = albumentations.augmentations.transforms.JpegCompression(0, 100)
     totensor = torchvision.transforms.ToTensor()
 
@@ -79,6 +79,9 @@ def build_validation_transform(resolution=(256, 256), scale=4):
 
     # refimage is when we have an actual hq reference image (e.g., old to new graphics)
     def _transform(image, refimage=None):
+        # refimage should be same size as original (before lr resizing)
+        if refimage is not None:
+            assert refimage.size == image.size, (refimage.size, image.size)
         vchunks = int(np.ceil(image.height/resolution[0]))
         hchunks = int(np.ceil(image.width/resolution[1]))
         padded_height = vchunks*resolution[0]
@@ -88,9 +91,13 @@ def build_validation_transform(resolution=(256, 256), scale=4):
                    int(padded_width - image.width),
                    int(padded_height - image.height))
         image = F.pad(image, padding=padding)
+        if refimage is not None:
+            refimage = F.pad(refimage, padding=padding)
         hrs = list()
         lrs = list() 
         hr_refs = list()
+
+
         for i in range(vchunks):
             for j in range(hchunks):
                 hr = F.crop(image, 
@@ -102,7 +109,7 @@ def build_validation_transform(resolution=(256, 256), scale=4):
                 hrs.append(totensor(hr))
                 lrs.append(totensor(lr))
                 if refimage is not None:
-                    assert refimage.size == image.size 
+                    assert refimage.size == image.size, (refimage.size, image.size)
                     hr_ref = F.crop(refimage,
                                     i*resolution[0],
                                     j*resolution[1],
@@ -343,6 +350,10 @@ def testgeneration(path):
         sr_dummy_pil.save(f'test/inf_dummy_sr_{idx}.png') 
         if idx >= 4:
             break 
+
+def test_ref(srcpath, tgtpath):
+    #TODO
+    pass
 
 if __name__ == '__main__':
     testgeneration('data5/train')
